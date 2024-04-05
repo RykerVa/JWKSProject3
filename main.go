@@ -17,7 +17,9 @@ import (
 	"math/big"
 	"sync"
 	"io"
-	//"os"
+	"crypto/sha256"
+	//"encoding/hex"
+	"os"
 
 	"github.com/google/uuid"
 	"github.com/golang-jwt/jwt/v4"
@@ -40,13 +42,13 @@ const (
 	rateBurst      = rateLimit * 10 // Burst rate
 	maxRequests    = 10           // Maximum number of requests allowed per time window
     windowDuration = 1 * time.Second // Time window duration
-    aesKey         = "lTNfD4iyxn25jlCT" // AES key
 )
 
 var (
     requestCounterMu sync.Mutex
     requestCounter   = make(map[string]int)
     lastReset        = time.Now()
+	aesKey = aesKeyFromEnv()
 )
 
 func main() {
@@ -103,8 +105,16 @@ func isRateLimited(ip string) bool {
     return requestCounter[ip] > maxRequests
 }
 
-func encrypt(data []byte) ([]byte, error) {
-	key := []byte(aesKey)
+func aesKeyFromEnv() []byte {
+	key := os.Getenv("NOT_MY_KEY")
+	// Hash the key using SHA-256 to ensure a fixed-length key
+	hasher := sha256.New()
+	hasher.Write([]byte(key))
+	return hasher.Sum(nil)
+}
+
+// Encrypts data using AES with the provided key.
+func encrypt(data []byte, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -124,9 +134,8 @@ func encrypt(data []byte) ([]byte, error) {
 	return ciphertext, nil
 }
 
-// Decrypts data using AES with the hardcoded key.
-func decrypt(data []byte) ([]byte, error) {
-	key := []byte(aesKey)
+// Decrypts data using AES with the provided key.
+func decrypt(data []byte, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -240,21 +249,23 @@ func initializeKeyStore(db *sql.DB) {
 }
 
 func generateAndStoreKey(db *sql.DB, exp int64) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		log.Fatalf("Error generating RSA key: %v", err)
-	}
+    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+    if err != nil {
+        log.Fatalf("Error generating RSA key: %v", err)
+    }
 
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: privateKeyBytes,
-	})
+    privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
 
-	_, err = db.Exec("INSERT INTO keys (key, exp) VALUES (?, ?)", privateKeyPEM, exp)
-	if err != nil {
-		log.Fatalf("Error inserting key into database: %v", err)
-	}
+    // Encrypt the private key before storing it in the database
+    encryptedPrivateKey, err := encrypt(privateKeyBytes, aesKey)
+    if err != nil {
+        log.Fatalf("Error encrypting private key: %v", err)
+    }
+
+    _, err = db.Exec("INSERT INTO keys (key, exp) VALUES (?, ?)", encryptedPrivateKey, exp)
+    if err != nil {
+        log.Fatalf("Error inserting key into database: %v", err)
+    }
 }
 
 func jwksHandler(db *sql.DB) http.HandlerFunc {
