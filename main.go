@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -14,6 +16,8 @@ import (
 	"time"
 	"math/big"
 	"sync"
+	"io"
+	//"os"
 
 	"github.com/google/uuid"
 	"github.com/golang-jwt/jwt/v4"
@@ -36,6 +40,7 @@ const (
 	rateBurst      = rateLimit * 10 // Burst rate
 	maxRequests    = 10           // Maximum number of requests allowed per time window
     windowDuration = 1 * time.Second // Time window duration
+    aesKey         = "lTNfD4iyxn25jlCT" // AES key
 )
 
 var (
@@ -96,6 +101,54 @@ func isRateLimited(ip string) bool {
 
     // Check if the request count exceeds the maximum allowed requests
     return requestCounter[ip] > maxRequests
+}
+
+func encrypt(data []byte) ([]byte, error) {
+	key := []byte(aesKey)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+	return ciphertext, nil
+}
+
+// Decrypts data using AES with the hardcoded key.
+func decrypt(data []byte) ([]byte, error) {
+	key := []byte(aesKey)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return nil, err
+	}
+
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return plaintext, nil
 }
 
 func initDB(dbPath string) *sql.DB {
